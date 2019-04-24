@@ -1,0 +1,10 @@
+scripts/disable_arp.sh
+
+scripts/disable_icmp.sh
+
+scripts/disable_ip_forward.sh 
+
+
+scripts/disable_offloading.sh
+
+ping 10.0.1.1 -c 4
