@@ -43,7 +43,8 @@ static int get_packet_direction(char *packet)
 	return DIR_INVALID;
 }
 
-u16 assign_external_port(){
+u16 assign_external_port()
+{
 	int i;
 	for(i = NAT_PORT_MIN; i < NAT_PORT_MAX; ++i) {
 		if (!nat.assigned_ports[i]){
@@ -90,21 +91,21 @@ void do_translation(iface_info_t *iface, char *packet, int len, int dir)
 {
 	//fprintf(stdout, "TODO: do translation for this packet.\n");
 	pthread_mutex_lock(&nat.lock);
+	int find = 0;
 	struct iphdr  *ip_hdr  = packet_to_ip_hdr(packet);
 	struct tcphdr *tcp_hdr = packet_to_tcp_hdr(packet);
+	u32 daddr = ntohl(ip_hdr->daddr);
+	u32 saddr = ntohl(ip_hdr->saddr);
+	u16 sport = ntohs(tcp_hdr->sport);
+	u16 dport = ntohs(tcp_hdr->dport);
 	struct nat_mapping *mapping_entry, *q;
 
-	//int direction = get_packet_direction(packet);
-	iface_info_t *iface_send = NULL;
 	if(dir == DIR_OUT) {
 		printf("DIR_OUT\n");
-		int find = 0;
-		u32 daddr = ntohl(ip_hdr->daddr);
 		struct list_head *head = &nat.nat_mapping_list[hash8((char*)&daddr, sizeof(daddr))];
-
 		// Find if there's already the corresponding mapping
 		list_for_each_entry_safe(mapping_entry, q, head, list) {
-			if(mapping_entry->remote_ip == ntohl(ip_hdr->daddr)){
+			if(mapping_entry->remote_ip == daddr){
 				find = 1;
 				break;
 			}
@@ -113,10 +114,10 @@ void do_translation(iface_info_t *iface, char *packet, int len, int dir)
 		// If not dind, build a new mapping
 		if(!find) {
 			struct nat_mapping *new_mapping = (struct nat_mapping *)malloc(sizeof(struct nat_mapping));
-			new_mapping->remote_ip     = ntohl(ip_hdr->daddr);
-			new_mapping->remote_port   = ntohs(tcp_hdr->dport);
-			new_mapping->internal_ip   = ntohl(ip_hdr->saddr);
-			new_mapping->internal_port = ntohs(tcp_hdr->sport);
+			new_mapping->remote_ip     = daddr;
+			new_mapping->remote_port   = dport;
+			new_mapping->internal_ip   = saddr;
+			new_mapping->internal_port = sport;
 			new_mapping->external_ip   = nat.external_iface->ip;
 			new_mapping->external_port = assign_external_port();
 			new_mapping->update_time = 0;
@@ -124,37 +125,13 @@ void do_translation(iface_info_t *iface, char *packet, int len, int dir)
 			list_add_tail(&new_mapping->list, &mapping_entry->list);
 			mapping_entry = new_mapping;
 		}
-/*
-		// Update the mapping
-		if(tcp_hdr->flags & TCP_FIN)
-			mapping_entry->conn.internal_fin = 1;
-		if(tcp_hdr->flags & TCP_ACK)
-			mapping_entry->conn.internal_ack = 1;
-		if(tcp_hdr->flags & TCP_RST) {
-			mapping_entry->conn.internal_fin = 1;
-			mapping_entry->conn.internal_ack = 1;
-			mapping_entry->conn.external_fin = 1;
-			mapping_entry->conn.external_ack = 1;
-		}
-
-		// Update and send the packet
-		ip_hdr->saddr = htonl(nat.external_iface->ip);
-		tcp_hdr->sport = htons(mapping_entry->external_port);
-		tcp_hdr->checksum = tcp_checksum(ip_hdr, tcp_hdr);
-		ip_hdr->checksum = ip_checksum(ip_hdr);
-		ip_send_packet(packet, len);
-		*/
 	}
 	else if(dir == DIR_IN) {
 		printf("DIR_IN\n");
-		int find = 0;
-		u32 saddr = ntohl(ip_hdr->saddr);
 		struct list_head *head = &nat.nat_mapping_list[hash8((char*)&saddr,sizeof(saddr))];
-		//struct nat_mapping *mapping_entry, *q;
-
 		// Find if there's already the corresponding mapping
 		list_for_each_entry_safe(mapping_entry, q, head, list) {
-			if(mapping_entry->remote_ip == ntohl(ip_hdr->saddr)/* && mapping_entry->remote_port ==*/ ) {
+			if(mapping_entry->remote_ip == saddr/* && mapping_entry->remote_port ==*/ ) {
 				find = 1;
 				break;
 			}
@@ -164,9 +141,8 @@ void do_translation(iface_info_t *iface, char *packet, int len, int dir)
 		if(!find) {
 			int rule_find = 0;
 			struct dnat_rule *rule_entry, *rule_q;
-
 			list_for_each_entry_safe(rule_entry, rule_q, &nat.rules, list) {
-				if(rule_entry->external_ip == ntohl(ip_hdr->daddr) && rule_entry->external_port == ntohs(tcp_hdr->dport)) {
+				if(rule_entry->external_ip == daddr && rule_entry->external_port == dport) {
 					rule_find = 1;
 					break;
 				}
@@ -175,8 +151,8 @@ void do_translation(iface_info_t *iface, char *packet, int len, int dir)
 				icmp_send_packet(packet, len, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH);
 
 			struct nat_mapping *new_mapping = (struct nat_mapping *)malloc(sizeof(struct nat_mapping));
-			new_mapping->remote_ip     = ntohl(ip_hdr->saddr);
-			new_mapping->remote_port   = ntohs(tcp_hdr->sport);
+			new_mapping->remote_ip     = saddr;
+			new_mapping->remote_port   = sport;
 			new_mapping->internal_ip   = rule_entry->internal_ip;
 			new_mapping->internal_port = rule_entry->internal_port;
 			new_mapping->external_ip   = rule_entry->external_ip;
@@ -186,26 +162,6 @@ void do_translation(iface_info_t *iface, char *packet, int len, int dir)
 			list_add_tail(&new_mapping->list, &mapping_entry->list);
 			mapping_entry = new_mapping;
 		}
-/*
-		// Update the mapping
-		if(tcp_hdr->flags & TCP_FIN)
-			mapping_entry->conn.external_fin = 1;
-		if(tcp_hdr->flags & TCP_ACK)
-			mapping_entry->conn.external_ack = 1;
-		if(tcp_hdr->flags & TCP_RST) {
-			mapping_entry->conn.external_fin = 1;
-			mapping_entry->conn.external_ack = 1;
-			mapping_entry->conn.internal_fin = 1;
-			mapping_entry->conn.internal_ack = 1;
-		}
-
-		// Update and send the packet
-		ip_hdr->daddr = htonl(mapping_entry->internal_ip);
-		tcp_hdr->dport = htons(mapping_entry->internal_port);
-		tcp_hdr->checksum = tcp_checksum(ip_hdr, tcp_hdr);
-		ip_hdr->checksum = ip_checksum(ip_hdr);
-		ip_send_packet(packet, len);
-*/
 	}
 	else
 		icmp_send_packet(packet, len, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH);
@@ -260,9 +216,7 @@ void *nat_timeout()
 			struct nat_mapping *mapping_entry, *q;
 			list_for_each_entry_safe(mapping_entry, q, head, list) {
 				mapping_entry->update_time ++;
-				int finished = 	mapping_entry->conn.external_fin && mapping_entry->conn.internal_fin &&
-								mapping_entry->conn.external_ack && mapping_entry->conn.internal_ack ;
-				if(finished || mapping_entry->update_time >= TCP_ESTABLISHED_TIMEOUT)
+				if(is_flow_finished(&mapping_entry->conn) || mapping_entry->update_time >= TCP_ESTABLISHED_TIMEOUT)
 					list_delete_entry(&mapping_entry->list);
 			}
 		}
